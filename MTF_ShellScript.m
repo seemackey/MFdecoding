@@ -4,13 +4,15 @@ clear;clc;close all;
  
 %% load and epoch data
 filedir = 'E:\MTF\hi02\017\';
-window_size = 10; % in ms
+figuresdir = '';
+bins = [1,5,10,50,100,500]; % in ms
 selected_channels = [8,11,14]; % for decoding example traces
 epoch_tframe = [-30 750];
 tic
 [epoched_data,srate] = MTF_loadMATfile(filedir, epoch_tframe);
 toc
 %
+%function [] = MTF_DecodingFxn(epoched_data,window_size,epoch_tframe,selected_channels,figuresdir)
 %% plot csd and mua
 % Define time axis for plotting
 time_axis = epoch_tframe(1):1000/srate:epoch_tframe(2);
@@ -38,7 +40,7 @@ num_conditions = length(epoched_data.LFP);
 num_rows = min(max_rows_per_figure, num_conditions);
 num_cols = ceil(num_conditions / num_rows) * num_cols_per_subplot;
 
-while true
+
     figure;
     % Loop through conditions and plot CSD and MUA with imagesc
     for cond_idx = 1:num_conditions
@@ -92,104 +94,110 @@ while true
         colorbar;
     end
 
-    % Prompt for user input
-    new_selchans = input('Enter new channel selection as a vector (e.g., [2:18]), or press Enter to keep current selection and exit: ');
-
-    % Check if the user wants to replot with a new selection or exit
-    if isempty(new_selchans)
-        break; % Exit the loop if no input is given
-    else
-        selchans = new_selchans; % Update selchans with the new selection
-        close(gcf); % Close the current figure before replotting
-    end
-end
+% save the figure to the newly created figures directory as
+% "filename_profiles%
 
 
 %% Decoding stimulus conditions over time
+bins = [1,5,10,50,100,500]; % in ms
+for bin_idx = 1:length(bins)
 % Define the time window size (50 ms)
-
-window_size_samples = window_size / 1000 * srate; % convert to samples
-num_windows = floor(length(time_axis) / window_size_samples); % number of windows
+window_size = bins(bin_idx);
+window_size_samples = window_size / 1000 * srate; % Convert to samples
+num_windows = floor(length(time_axis) / window_size_samples); % Number of windows
 
 % Initialize variables
-decoding_accuracy_windows = zeros(length(selchans), num_windows);
-decoding_accuracy_conditions = zeros(length(selchans), num_conditions, num_windows);
-decoding_accuracy_cis = zeros(length(selchans), num_windows, 2); % 95% CIs
+decoding_accuracy_windows = zeros(length(bins),length(selchans), num_windows);
+decoding_accuracy_conditions = zeros(length(bins),length(selchans), num_conditions, num_windows);
+decoding_accuracy_cis = zeros(length(bins),length(selchans), num_windows, 2); % 95% CIs
 
-% Prepare the data for decoding
-for ch_idx = 1:length(selchans)
-    ch = selchans(ch_idx);
-    
-    % Loop through each time window
-    for w = 1:num_windows
-        window_start = (w-1) * window_size_samples + 1;
-        window_end = window_start + window_size_samples - 1;
+% Initialize storage for confusion matrices
+confusion_matrices_all = zeros(length(bins),length(selchans), num_windows, num_conditions, num_conditions); % 4D array
+
+    % Prepare the data for decoding
+    for ch_idx = 1:length(selchans)
+        ch = selchans(ch_idx);
         
-        flattened_data_window = [];
-        flattened_labels_window = [];
-        
-        % Extract and flatten data for the current window and channel
-        for cond_idx = 1:num_conditions
-            csd = epoched_data.CSD{cond_idx}(ch, :, :); % Select data for the current channel
-            num_trials = size(csd, 2);
+        % Loop through each time window
+        for w = 1:num_windows
+            window_start = (w-1) * window_size_samples + 1;
+            window_end = window_start + window_size_samples - 1;
             
-            for trial = 1:num_trials
-                trial_data_window = csd(:, trial, window_start:window_end); % Extract data for each window
-                flattened_data_window = [flattened_data_window; trial_data_window(:)'];
-                flattened_labels_window = [flattened_labels_window; cond_idx];
+            flattened_data_window = [];
+            flattened_labels_window = [];
+            
+            % Extract and flatten data for the current window and channel
+            for cond_idx = 1:num_conditions
+                csd = epoched_data.CSD{cond_idx}(ch, :, :); % Select data for the current channel
+                num_trials = size(csd, 2);
+                
+                for trial = 1:num_trials
+                    trial_data_window = csd(:, trial, window_start:window_end); % Extract data for each window
+                    flattened_data_window = [flattened_data_window; trial_data_window(:)'];
+                    flattened_labels_window = [flattened_labels_window; cond_idx];
+                end
             end
-        end
-        
-        % Convert flattened_data_window to double if it's not
-        if ~isa(flattened_data_window, 'double')
-            flattened_data_window = double(flattened_data_window);
-        end
-        
-        % Initialize variables for decoding accuracy and confusion matrix
-        decoding_accuracy = zeros(4, 1); % 4-fold cross-validation
-        confusion_matrix = zeros(num_conditions, num_conditions); % Initialize confusion matrix
-        
-        % Perform cross-validation and decoding
-        cv = cvpartition(flattened_labels_window, 'KFold', 4);
-        for fold = 1:cv.NumTestSets
-            train_idx = cv.training(fold);
-            test_idx = cv.test(fold);
             
-            train_data = flattened_data_window(train_idx, :);
-            test_data = flattened_data_window(test_idx, :);
-            train_labels = flattened_labels_window(train_idx);
-            test_labels = flattened_labels_window(test_idx);
-            
-            % Create and train the model
-            template = templateSVM('Standardize', true);
-            model = fitcecoc(train_data, train_labels, 'Learners', template);
-            
-            % Test the model
-            predicted_labels = predict(model, test_data);
-            
-            % Calculate decoding accuracy
-            decoding_accuracy(fold) = mean(predicted_labels == test_labels);
-            
-            % Update confusion matrix
-            for i = 1:length(test_labels)
-                confusion_matrix(test_labels(i), predicted_labels(i)) = ...
-                    confusion_matrix(test_labels(i), predicted_labels(i)) + 1;
+            % Convert flattened_data_window to double if it's not
+            if ~isa(flattened_data_window, 'double')
+                flattened_data_window = double(flattened_data_window);
             end
+            
+            % Initialize variables for decoding accuracy and confusion matrices
+            decoding_accuracy = zeros(4, 1); % 4-fold cross-validation
+            confusion_matrices_folds = zeros(4, num_conditions, num_conditions); % Initialize confusion matrix for each fold
+            
+            % Perform cross-validation and decoding
+            cv = cvpartition(flattened_labels_window, 'KFold', 4);
+            for fold = 1:cv.NumTestSets
+                train_idx = cv.training(fold);
+                test_idx = cv.test(fold);
+                
+                train_data = flattened_data_window(train_idx, :);
+                test_data = flattened_data_window(test_idx, :);
+                train_labels = flattened_labels_window(train_idx);
+                test_labels = flattened_labels_window(test_idx);
+                
+                % Create and train the model
+                template = templateSVM('Standardize', true);
+                model = fitcecoc(train_data, train_labels, 'Learners', template);
+                
+                % Test the model
+                predicted_labels = predict(model, test_data);
+                
+                % Calculate decoding accuracy
+                decoding_accuracy(fold) = mean(predicted_labels == test_labels);
+                
+                % Update confusion matrix for current fold
+                fold_confusion_matrix = zeros(num_conditions, num_conditions);
+                for i = 1:length(test_labels)
+                    fold_confusion_matrix(test_labels(i), predicted_labels(i)) = ...
+                        fold_confusion_matrix(test_labels(i), predicted_labels(i)) + 1;
+                end
+                
+                % Store confusion matrix for the current fold
+                confusion_matrices_folds(fold, :, :) = fold_confusion_matrix;
+            end
+            
+            % Average confusion matrix across folds for the current window and channel
+            avg_confusion_matrix = squeeze(mean(confusion_matrices_folds, 1)); 
+            confusion_matrices_all(ch_idx, w, :, :) = avg_confusion_matrix; % Store the averaged confusion matrix
+            
+            % Calculate and store the average decoding accuracy for the current window
+            decoding_accuracy_windows(ch_idx, w) = mean(decoding_accuracy);
+            
+            % Calculate accuracy for each condition and store it for the current window
+            for cond_idx = 1:num_conditions
+                decoding_accuracy_conditions(ch_idx, cond_idx, w) = ...
+                    avg_confusion_matrix(cond_idx, cond_idx) / sum(avg_confusion_matrix(cond_idx, :));
+            end
+            
+            % Calculate the 95% CI using the percentile method
+            decoding_accuracy_cis(ch_idx, w, :) = prctile(decoding_accuracy, [2.5 97.5]);
         end
-        
-        % Calculate and store the average decoding accuracy for the current window
-        decoding_accuracy_windows(ch_idx, w) = mean(decoding_accuracy);
-        
-        % Calculate accuracy for each condition and store it for the current window
-        for cond_idx = 1:num_conditions
-            decoding_accuracy_conditions(ch_idx, cond_idx, w) = ...
-                confusion_matrix(cond_idx, cond_idx) / sum(confusion_matrix(cond_idx, :));
-        end
-        
-        % Calculate the 95% CI using the percentile method
-        decoding_accuracy_cis(ch_idx, w, :) = prctile(decoding_accuracy, [2.5 97.5]);
     end
 end
+
 
 % Identify the best condition for each channel considering all windows
 best_conditions = zeros(length(selchans), 1);
@@ -206,8 +214,12 @@ window_time_axis = linspace(epoch_tframe(1), epoch_tframe(2), num_windows);
 %% empirically calculate chance via shuffling decoding labels
 num_permutations = 5; 
 
+window_size = bins(bin_idx);
+window_size_samples = window_size / 1000 * srate; % Convert to samples
+num_windows = floor(length(time_axis) / window_size_samples); % Number of windows
+
 % Initialize a matrix to store decoding accuracies for each permutation
-permutation_accuracies = zeros(num_permutations, num_windows);
+permutation_accuracies = zeros(num_permutations, 50);
 
 % Perform the permutation test
 for perm = 1:num_permutations
@@ -215,7 +227,7 @@ for perm = 1:num_permutations
     shuffled_labels_window = flattened_labels_window(randperm(length(flattened_labels_window)));
     
     % Initialize variables for decoding accuracy across channels
-    decoding_accuracy_permuted = zeros(length(selchans), num_windows);
+    decoding_accuracy_permuted = zeros(length(selchans), 50);
     
     % Loop through channels and windows
     for ch_idx = 1:length(selchans)
@@ -290,8 +302,8 @@ chance_level = prctile(permutation_accuracies, 95);
 
 % Display decoding accuracy over time
 f = figure;
-f.Position = [150 150 2000 500];
-subplot(1,4,1)
+f.Position = [150 150 1800 500];
+subplot(1,3,1)
 imagesc(window_time_axis, 1:length(selchans), decoding_accuracy_windows);
 xlabel('Time (ms)');
 ylabel('Channels');
@@ -299,7 +311,7 @@ title('Decoding Accuracy over Time');
 colorbar;
 
 % Display decoding accuracy by condition and channel
-subplot(1,4,2)
+subplot(1,3,2)
 imagesc(1:num_conditions, 1:length(selchans), mean(decoding_accuracy_conditions, 3));
 xlabel('Conditions');
 ylabel('Channels');
@@ -308,7 +320,7 @@ colorbar;
 
 
 % Subplot for decoding accuracy over time with CIs for selected channels
-subplot(1, 4, 3);
+subplot(1, 3, 3);
 hold on;
 
 
@@ -345,11 +357,9 @@ legend('show');
 grid on;
 hold off;
 
-% plot confusion matrix
-normalized_confusion_matrix = confusion_matrix ./ sum(confusion_matrix, 2);
-subplot(1,4,4)
-imagesc(normalized_confusion_matrix)
-title('Confusion matrix')
-xlabel('Predicted condition')
-ylabel('True condition')
-colorbar
+% save decoding figure as .fig and .jpg in newly created figures directory as
+% filename_decoding
+
+% save decoding results
+% decoding_accuracy, decoding_accuracy_cis, decoding_accuracy_conditions
+% decoding_accuracy_permuted, decoding_accuracy_windows, epoched_data,
