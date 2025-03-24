@@ -13,7 +13,7 @@ epoch_tframe = [-50 750];
 
 % Load and epoch data
 tic
-[epoched_data, srate] = MTF_loadMATfile(filedir, epoch_tframe);
+[epoched_data, srate] = MTF_loadMATfileOLD(filedir, epoch_tframe);
 toc
 disp('data imported')
 %% Plot CSD and MUA
