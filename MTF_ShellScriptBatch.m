@@ -3,10 +3,14 @@
 clear; clc; close all;
 
 % === CONFIGURATION ===
-parent_dir = 'E:\MTF\data\click\core\left\imported\';    % directory containing oe/om/ev2 files
-figures_dir = fullfile(parent_dir, 'decoding_results');
-epoch_tframe = [-50 750];                   % ms
-bins = [1, 5, 10, 50, 150, 325, 750];       % decoding window sizes (ms)
+parent_dir = 'E:\MTF\data\tone\core\right\imported\';    % directory containing oe/om/ev2 files
+figures_dir = fullfile(parent_dir, 'decoding_results_LDA');
+if ~exist(figures_dir, 'dir')
+    mkdir(figures_dir);
+end
+epoch_tframe = [-50 700];                   % ms
+bins = [5,10,50,100,350,700];       % decoding window sizes (ms)
+%bins = [150,325];
 selected_channels = [8,11,14];
 
 % === Get all 1-/2- files ===
@@ -53,25 +57,49 @@ for i = 1:length(all_files)
     % Epoch and decode
     try
         [epoched_data, srate] = MTF_loadMATfile(temp_dir, epoch_tframe);
-        numchans = size(epoched_data.LFP_trial_avg{1}, 1);
-        selchans = 1:numchans;
-        num_conditions = length(epoched_data.LFP);
-
+        if csd_flag ==1
+            numchans = size(epoched_data.LFP_trial_avg{1}, 1);
+            selchans = 1:numchans;
+            num_conditions = length(epoched_data.LFP);
+        else
+            numchans = size(epoched_data.MUA_trial_avg{1}, 1);
+            selchans = 1:numchans;
+            num_conditions = length(epoched_data.MUA);
+        end
+    catch err
+        warning('Failed to load or process file %s: %s', name_no_ext, err.message);
+        disp(err.stack);
+        rmdir(temp_dir, 's');
+        continue;
+    end
+    
+    % Skip decoding if not enough conditions
+    if num_conditions < 3
+        fprintf('Skipping %s due to insufficient conditions (%d found).\n', name_no_ext, num_conditions);
+        rmdir(temp_dir, 's');
+        continue;
+    end
+    
+    try
         for bin_idx = 1:length(bins)
             bin = bins(bin_idx);
             fprintf('  - Bin %d ms...\n', bin);
+            tic
             results = MTF_run_decoding(epoched_data, bin, srate, csd_flag, selchans, selected_channels, epoch_tframe);
-
+            toc
             % Save results using full filename
             tag = name_no_ext;
             savefile = fullfile(figures_dir, sprintf('%s_decoding_%dms.mat', tag, bin));
             figfile  = fullfile(figures_dir, sprintf('%s_decoding_%dms.fig', tag, bin));
-            save(savefile, '-struct', 'results');
             saveas(results.figure, figfile);
-            close(results.figure);
+            results.figure = [];
+            save(savefile, '-struct', 'results');
+            
+            close all
         end
     catch err
         warning('Error decoding %s: %s', name_no_ext, err.message);
+        disp(err.stack);
     end
 
     rmdir(temp_dir, 's');
@@ -123,6 +151,9 @@ for ch_idx = 1:numchans
             end
 
             num_trials = size(data, 2);
+            %flattened_data_window = zeros(1,num_trials * num_conditions);
+            %flattened_labels_window = zeros(num_trials * num_conditions, 1);
+
             for trial = 1:num_trials
                 trial_data = data(:, trial, window_start:window_end);
                 flattened_data_window = [flattened_data_window; trial_data(:)'];
@@ -139,9 +170,11 @@ for ch_idx = 1:numchans
             train_idx = cv.training(fold);
             test_idx = cv.test(fold);
 
-            model = fitcecoc(flattened_data_window(train_idx, :), ...
-                             flattened_labels_window(train_idx), ...
-                             'Learners', templateSVM('Standardize', true));
+            % model = fitcecoc(flattened_data_window(train_idx, :), ...
+            %                  flattened_labels_window(train_idx), ...
+            %                  'Learners', templateSVM('Standardize', true));
+            % Train LDA model using fitcdiscr
+            model = fitcdiscr(flattened_data_window(train_idx, :), flattened_labels_window(train_idx));
 
             preds = predict(model, flattened_data_window(test_idx, :));
             truth = flattened_labels_window(test_idx);
@@ -168,11 +201,16 @@ end
 % ----------------------------------------
 % === Permutation-Based Chance Accuracy ===
 % ----------------------------------------
-perm_window_size = 10; % ms
+
+if bin_size_ms < 100
+    perm_window_size = bin_size_ms; % ms
+else
+    perm_window_size = 50;
+end
 perm_window_size_samples = perm_window_size / 1000 * srate;
 perm_num_windows = floor(length(time_axis) / perm_window_size_samples);
 perm_window_time_axis = epoch_tframe(1) + (0:perm_num_windows-1) * perm_window_size;
-num_permutations = 50;
+num_permutations = 10;
 
 perm_flattened_labels = [];
 for cond_idx = 1:num_conditions
@@ -186,7 +224,7 @@ end
 
 permutation_accuracies = zeros(num_permutations, numchans, perm_num_windows);
 
-for perm = 1:num_permutations
+parfor perm = 1:num_permutations
     shuffled_labels = perm_flattened_labels(randperm(length(perm_flattened_labels)));
 
     for ch_idx = 1:numchans
@@ -212,18 +250,27 @@ for perm = 1:num_permutations
             cv = cvpartition(shuffled_labels, 'KFold', 4);
             fold_acc = zeros(4, 1);
             for f = 1:4
-                model = fitcecoc(flattened_data(cv.training(f), :), shuffled_labels(cv.training(f)), ...
-                                 'Learners', templateSVM('Standardize', true));
+                % Train LDA model using fitcdiscr during permutation analysis
+                model = fitcdiscr(flattened_data(cv.training(f), :), shuffled_labels(cv.training(f)));
+                
+                % Train using SVM
+                % model = fitcecoc(flattened_data(cv.training(f), :), shuffled_labels(cv.training(f)), ...
+                %                  'Learners', templateSVM('Standardize', true));
                 preds = predict(model, flattened_data(cv.test(f), :));
                 fold_acc(f) = mean(preds == shuffled_labels(cv.test(f)));
             end
             permutation_accuracies(perm, ch_idx, w) = mean(fold_acc);
+            
+            permutation_CIs(perm, ch_idx, w, :) = prctile(fold_acc, [2.5 97.5]);
         end
     end
 end
 
 mean_perm_acc = squeeze(mean(permutation_accuracies, 1));
 std_perm_acc = squeeze(std(permutation_accuracies, 0, 1));
+mean_permutation_accuracy = squeeze(mean(permutation_accuracies, 1));
+permutation_CI_lower = squeeze(mean(permutation_CIs(:,:,:,1), 1));
+permutation_CI_upper = squeeze(mean(permutation_CIs(:,:,:,2), 1));
 
 % ------------------
 % === Visualization ===
@@ -254,9 +301,9 @@ for i = 1:length(selected_channels)
     plot(bin_centers, decoding_accuracy_cis(ch,:,1), ':', 'Color', colors(i,:), 'HandleVisibility', 'off');
     plot(bin_centers, decoding_accuracy_cis(ch,:,2), ':', 'Color', colors(i,:), 'HandleVisibility', 'off');
 
-    plot(perm_window_time_axis, mean_perm_acc(ch,:), 'r--', 'LineWidth', 2, 'DisplayName', 'Chance');
+    plot(perm_window_time_axis, mean_permutation_accuracy(ch,:), 'r--', 'LineWidth', 2, 'DisplayName', 'Chance');
     fill([perm_window_time_axis, fliplr(perm_window_time_axis)], ...
-         [mean_perm_acc(ch,:) + 2*std_perm_acc(ch,:), fliplr(mean_perm_acc(ch,:) - 2*std_perm_acc(ch,:))], ...
+         [permutation_CI_upper(ch,:), fliplr(permutation_CI_lower(ch,:))], ...
          'r', 'FaceAlpha', 0.2, 'EdgeColor', 'none', 'HandleVisibility', 'off');
 
     xlabel('Time (ms)'); ylabel('Accuracy');
@@ -267,12 +314,14 @@ end
 % ----------------
 % === RETURN ===
 % ----------------
+results.epoched_data = epoched_data;
 results.decoding_accuracy_windows = decoding_accuracy_windows;
 results.decoding_accuracy_cis = decoding_accuracy_cis;
 results.decoding_accuracy_conditions = decoding_accuracy_conditions;
-results.decoding_accuracy_permuted = permutation_accuracies;
-results.mean_permutation_accuracy = mean_perm_acc;
-results.std_permutation_accuracy = std_perm_acc;
+
+results.mean_permutation_accuracy = mean_permutation_accuracy;
+results.permutation_accuracy_loCI = permutation_CI_lower;
+results.permutation_accuracy_hiCI = permutation_CI_upper;
 results.confusion_matrices_all = confusion_matrices_all;
 results.figure = f;
 
