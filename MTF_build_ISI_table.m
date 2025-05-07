@@ -1,49 +1,73 @@
-function MTF_compare_directories_by_layer(dir1, dir2, bin_size, file_type, verbose)
-% Compare best decoding ISI distributions across supra, granular, and infra layers between two directories.
-% Inputs:
-%   dir1      - Directory 1 path
-%   dir2      - Directory 2 path
-%   bin_size  - Bin size (in ms) to match decoding results
-%   file_type - 'oe' for CSD/LFP or 'om' for MUA
-%   verbose   - (Optional) Set true to enable detailed logging
+function ISI_table = MTF_build_ISI_table(dir_configs, bin_size, file_type, verbose)
+% Collects best ISI values across layer, hemisphere, and area for all recordings.
+%
+% INPUTS:
+%   dir_configs - Struct array with fields:
+%                 .path        - Directory path
+%                 .hemisphere  - 'left' or 'right'
+%                 .area        - 'core' or 'pb'
+%   bin_size    - e.g. 700
+%   file_type   - 'oe' or 'om'
+%   verbose     - optional (default = false)
+%
+% OUTPUT:
+%   ISI_table   - Long-format table of ISIs with metadata for stats
+%
+% EXAMPLE:
+%   dirs = struct( ...
+%       'path', {'E:\MTF\core\left', 'E:\MTF\core\right'}, ...
+%       'hemisphere', {'left', 'right'}, ...
+%       'area', {'core', 'core'} ...
+%   );
+%   T = MTF_build_ISI_table(dirs, 700, 'oe', true);
 
-if nargin < 5
+if nargin < 4
     verbose = false;
 end
 
-% Get files for each directory
-files1 = dir(fullfile(dir1, sprintf('*%s_decoding_%dms.mat', file_type, bin_size)));
-files2 = dir(fullfile(dir2, sprintf('*%s_decoding_%dms.mat', file_type, bin_size)));
+all_rows = [];
 
-% Get ISIs grouped by layer
-layers1 = extract_best_ISIs_by_layer(files1, dir1, verbose);
-layers2 = extract_best_ISIs_by_layer(files2, dir2, verbose);
+for i = 1:length(dir_configs)
+    dir_path = dir_configs(i).path;
+    hemisphere = dir_configs(i).hemisphere;
+    area = dir_configs(i).area;
 
-% Plot comparisons by layer
-layer_names = {'supra', 'granular', 'infra'};
-figure('Name', sprintf('ISI Layer Comparison (%s, %dms)', file_type, bin_size), 'Position', [100 100 1200 400]);
-for i = 1:length(layer_names)
-    layer = layer_names{i};
-    subplot(1, 3, i);
-    
-    if ~isempty(layers1.(layer)) && ~isempty(layers2.(layer))
-        cdfplot(layers1.(layer)); hold on;
-        cdfplot(layers2.(layer));
-        legend(extract_dir_name(dir1), extract_dir_name(dir2), 'Location', 'best');
-        [~, p] = kstest2(layers1.(layer), layers2.(layer));
-        title(sprintf('%s Layer\np = %.4f', upper(layer), p));
-        xlabel('Best ISI (ms)');
-        xscale('log')
-        ylabel('Cumulative Probability');
-        grid on;
-    else
-        title(sprintf('%s Layer\n(No data)', upper(layer)));
-        axis off;
+    files = dir(fullfile(dir_path, sprintf('*%s_decoding_%dms.mat', file_type, bin_size)));
+    if isempty(files)
+        warning('No decoding files found in %s', dir_path);
+        continue;
+    end
+
+    layer_ISIs = extract_best_ISIs_by_layer(files, dir_path, 1);
+
+    % Convert each layer’s ISIs into table rows
+    for layer_name = {'supra', 'granular', 'infra'}
+        layer = layer_name{1};
+        ISIs = layer_ISIs.(layer);
+        if isempty(ISIs); continue; end
+
+        n = length(ISIs);
+        T = table(ISIs, ...
+                  repmat({layer}, n, 1), ...
+                  repmat({hemisphere}, n, 1), ...
+                  repmat({area}, n, 1), ...
+                  (1:n)', ...  % This adds the UnitID column
+                  'VariableNames', {'BestISI', 'Layer', 'Hemisphere', 'Area', 'UnitID'});
+
+
+        all_rows = [all_rows; T]; %#ok<AGROW>
     end
 end
 
-end
+% Combine into final table
+ISI_table = all_rows;
 
+% Optional: show preview
+disp(head(ISI_table, 10));
+
+% Optional: run LME model
+% lme = fitlme(ISI_table, 'log(BestISI) ~ Layer*Area*Hemisphere + (1|Area)');
+% disp(anova(lme));
 function layer_ISIs = extract_best_ISIs_by_layer(files, dir_path, verbose)
 layer_ISIs = struct('supra', [], 'granular', [], 'infra', []);
     for i = 1:length(files)
@@ -139,7 +163,4 @@ layer_ISIs = struct('supra', [], 'granular', [], 'infra', []);
     end
 end
 
-
-function name = extract_dir_name(dir_path)
-[~, name] = fileparts(dir_path);
 end

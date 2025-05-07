@@ -1,48 +1,64 @@
-function MTF_compare_directories_by_layer(dir1, dir2, bin_size, file_type, verbose)
-% Compare best decoding ISI distributions across supra, granular, and infra layers between two directories.
+function layer_ISIs = MTF_compare_layers_within_directory(dir_path, bin_size, file_type, verbose)
+% Compare best decoding ISI distributions across supra, granular, and infra layers within a single directory
 % Inputs:
-%   dir1      - Directory 1 path
-%   dir2      - Directory 2 path
+%   dir_path  - Directory containing decoding results
 %   bin_size  - Bin size (in ms) to match decoding results
-%   file_type - 'oe' for CSD/LFP or 'om' for MUA
-%   verbose   - (Optional) Set true to enable detailed logging
+%   file_type - 'oe' or 'om'
+%   verbose   - Optional: Set true for logging
+%
+% Output:
+%   layer_ISIs - Struct with fields 'supra', 'granular', 'infra', each containing best ISIs across channels/files
+%
+% Example:
+%   layer_ISIs = MTF_compare_layers_within_directory('E:\MTF\core\right', 700, 'oe', true);
 
-if nargin < 5
+if nargin < 4
     verbose = false;
 end
 
-% Get files for each directory
-files1 = dir(fullfile(dir1, sprintf('*%s_decoding_%dms.mat', file_type, bin_size)));
-files2 = dir(fullfile(dir2, sprintf('*%s_decoding_%dms.mat', file_type, bin_size)));
+% === Find all matching decoding result files ===
+files = dir(fullfile(dir_path, sprintf('*%s_decoding_%dms.mat', file_type, bin_size)));
+if isempty(files)
+    error('No matching decoding result files found in %s for bin size %dms and type %s.', dir_path, bin_size, file_type);
+end
 
-% Get ISIs grouped by layer
-layers1 = extract_best_ISIs_by_layer(files1, dir1, verbose);
-layers2 = extract_best_ISIs_by_layer(files2, dir2, verbose);
+% === Extract ISIs grouped by layer ===
+layer_ISIs = extract_best_ISIs_by_layer(files, dir_path, verbose);
 
-% Plot comparisons by layer
+% === Plot CDFs comparing layers ===
 layer_names = {'supra', 'granular', 'infra'};
-figure('Name', sprintf('ISI Layer Comparison (%s, %dms)', file_type, bin_size), 'Position', [100 100 1200 400]);
+colors = lines(3);
+figure('Name', sprintf('Layer ISI CDFs (%s, %dms)', file_type, bin_size), 'Position', [100 100 600 500]);
+
+hold on;
 for i = 1:length(layer_names)
     layer = layer_names{i};
-    subplot(1, 3, i);
-    
-    if ~isempty(layers1.(layer)) && ~isempty(layers2.(layer))
-        cdfplot(layers1.(layer)); hold on;
-        cdfplot(layers2.(layer));
-        legend(extract_dir_name(dir1), extract_dir_name(dir2), 'Location', 'best');
-        [~, p] = kstest2(layers1.(layer), layers2.(layer));
-        title(sprintf('%s Layer\np = %.4f', upper(layer), p));
-        xlabel('Best ISI (ms)');
-        xscale('log')
-        ylabel('Cumulative Probability');
-        grid on;
-    else
-        title(sprintf('%s Layer\n(No data)', upper(layer)));
-        axis off;
+    if ~isempty(layer_ISIs.(layer))
+        cdfplot(layer_ISIs.(layer));
+    end
+end
+hold off;
+
+legend(upper(layer_names), 'Location', 'best');
+xlabel('Best ISI (ms)');
+ylabel('Cumulative Probability');
+title(sprintf('CDF of Best ISI by Layer\n(%s, %d ms)', file_type, bin_size));
+set(gca, 'XScale', 'log');
+grid on;
+
+% === Perform pairwise KS tests ===
+fprintf('\n--- KS Test Results (within %s) ---\n', extract_dir_name(dir_path));
+for i = 1:2
+    for j = i+1:3
+        layer1 = layer_names{i};
+        layer2 = layer_names{j};
+        if ~isempty(layer_ISIs.(layer1)) && ~isempty(layer_ISIs.(layer2))
+            [~, p] = kstest2(layer_ISIs.(layer1), layer_ISIs.(layer2));
+            fprintf('%s vs. %s: p = %.4f\n', upper(layer1), upper(layer2), p);
+        end
     end
 end
 
-end
 
 function layer_ISIs = extract_best_ISIs_by_layer(files, dir_path, verbose)
 layer_ISIs = struct('supra', [], 'granular', [], 'infra', []);
@@ -139,7 +155,8 @@ layer_ISIs = struct('supra', [], 'granular', [], 'infra', []);
     end
 end
 
-
 function name = extract_dir_name(dir_path)
 [~, name] = fileparts(dir_path);
+end
+
 end
