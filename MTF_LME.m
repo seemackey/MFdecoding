@@ -296,3 +296,147 @@ end
 % Shared legend
 legend({'Raw Mean±SEM', 'Model Mean±SEM'}, 'Location', 'southoutside', 'Orientation', 'horizontal');
 sgtitle('BestISI by Layer, Area, and Hemisphere (Raw vs Model)');
+
+% Ensure types and model predictions
+ISI_tableMUA.Layer = categorical(ISI_tableMUA.Layer, {'supra', 'granular', 'infra'});
+ISI_tableMUA.Area = categorical(ISI_tableMUA.Area, {'core', 'pb'});
+ISI_tableMUA.Hemisphere = categorical(ISI_tableMUA.Hemisphere, {'left', 'right'});
+ISI_tableMUA.Predicted = predict(lme);
+
+layers = categories(ISI_tableMUA.Layer);
+areas = categories(ISI_tableMUA.Area);
+hemispheres = categories(ISI_tableMUA.Hemisphere);
+colors = lines(numel(areas));
+offsets = [-0.15, 0.15];
+
+% Create subplots for each hemisphere
+figure('Position', [100 100 1000 500]);
+
+for h = 1:numel(hemispheres)
+    subplot(1, numel(hemispheres), h); hold on;
+    title(['Hemisphere: ', hemispheres{h}]);
+
+    for a = 1:numel(areas)
+        for l = 1:numel(layers)
+            % Logical index for this combo
+            idx = ISI_tableMUA.Layer == layers{l} & ...
+                  ISI_tableMUA.Area == areas{a} & ...
+                  ISI_tableMUA.Hemisphere == hemispheres{h};
+
+            % === Raw data ===
+            y_data = ISI_tableMUA.BestISI(idx);
+            mean_data = mean(y_data, 'omitnan');
+            sem_data = std(y_data, 'omitnan') / sqrt(sum(~isnan(y_data)));
+
+            % === Model prediction ===
+            y_pred = ISI_tableMUA.Predicted(idx);
+            mean_pred = mean(y_pred, 'omitnan');
+            sem_pred = std(y_pred, 'omitnan') / sqrt(sum(~isnan(y_pred)));
+
+            % X position
+            xpos = l + offsets(a);
+
+            % Plot raw data mean ± SEM
+            errorbar(xpos, mean_data, sem_data, 's', ...
+                'Color', colors(a,:), 'LineWidth', 1.5, ...
+                'MarkerFaceColor', colors(a,:), 'MarkerEdgeColor', 'k', ...
+                'CapSize', 8);
+
+
+            % Plot model prediction mean ± SEM
+            errorbar(xpos, mean_pred, sem_pred, '^', ...
+                'Color', [0 0 0], 'LineWidth', 1.5, ...
+                'MarkerFaceColor', 'w', 'MarkerEdgeColor', 'k', ...
+                'CapSize', 8);
+
+        end
+    end
+
+    % Aesthetics for subplot
+    xticks(1:numel(layers));
+    xticklabels(layers);
+    ylabel('BestISI (ms)');
+    xlabel('Layer');
+    xlim([0.5, numel(layers)+0.5]);
+    grid on;
+end
+
+% Shared legend
+%legend({'Raw Mean±SEM', 'Model Mean±SEM'}, 'Location', 'southoutside', 'Orientation', 'horizontal');
+sgtitle('BestISI by Layer, Area, and Hemisphere (Raw vs Model)');
+
+% Ensure categorical types and model predictions
+ISI_tableCSD.Layer = categorical(ISI_tableCSD.Layer, {'supra', 'granular', 'infra'});
+ISI_tableCSD.Area = categorical(ISI_tableCSD.Area, {'core', 'pb'});
+ISI_tableCSD.Hemisphere = categorical(ISI_tableCSD.Hemisphere, {'left', 'right'});
+ISI_tableCSD.Predicted = predict(fitlme(ISI_tableCSD, 'BestISI ~ Layer*Area*Hemisphere + (1|UnitID)'));
+
+% Category settings
+layers = categories(ISI_tableCSD.Layer);
+areas = categories(ISI_tableCSD.Area);
+hemispheres = categories(ISI_tableCSD.Hemisphere);
+colors = lines(numel(areas));
+offsets = [-0.15, 0.15];
+
+% Create subplots
+figure('Position', [100 100 1000 500]);
+
+for h = 1:numel(hemispheres)
+    subplot(1, numel(hemispheres), h); hold on;
+    title(['Hemisphere: ', hemispheres{h}]);
+
+    plottedArea = containers.Map({'core', 'pb'}, [false, false]);
+
+    for a = 1:numel(areas)
+        for l = 1:numel(layers)
+            idx = ISI_tableCSD.Layer == layers{l} & ...
+                  ISI_tableCSD.Area == areas{a} & ...
+                  ISI_tableCSD.Hemisphere == hemispheres{h};
+
+            y_data = ISI_tableCSD.BestISI(idx);
+            mean_data = mean(y_data, 'omitnan');
+            sem_data = std(y_data, 'omitnan') / sqrt(sum(~isnan(y_data)));
+
+            y_pred = ISI_tableCSD.Predicted(idx);
+            mean_pred = mean(y_pred, 'omitnan');
+            sem_pred = std(y_pred, 'omitnan') / sqrt(sum(~isnan(y_pred)));
+
+            xpos = l + offsets(a);
+
+            % Raw data: legend only once per area
+            if ~plottedArea(areas{a})
+                errorbar(xpos, mean_data, sem_data, 's', ...
+                    'Color', colors(a,:), 'LineWidth', 1.5, ...
+                    'MarkerFaceColor', colors(a,:), 'MarkerEdgeColor', 'k', ...
+                    'CapSize', 8, ...
+                    'DisplayName', char(areas{a}));
+                plottedArea(areas{a}) = true;
+            else
+                errorbar(xpos, mean_data, sem_data, 's', ...
+                    'Color', colors(a,:), 'LineWidth', 1.5, ...
+                    'MarkerFaceColor', colors(a,:), 'MarkerEdgeColor', 'k', ...
+                    'CapSize', 8, ...
+                    'HandleVisibility', 'off');
+            end
+
+            % Model predictions: never shown in legend
+            errorbar(xpos, mean_pred, sem_pred, '^', ...
+                'Color', [0 0 0], 'LineWidth', 1.5, ...
+                'MarkerFaceColor', 'w', 'MarkerEdgeColor', 'k', ...
+                'CapSize', 8, ...
+                'HandleVisibility', 'off');
+        end
+    end
+
+    % Aesthetics
+    xticks(1:numel(layers));
+    xticklabels(layers);
+    xlim([0.5, numel(layers)+0.5]);
+    ylabel('BestISI (ms)');
+    xlabel('Layer');
+    grid on;
+end
+
+% Shared legend
+legend('Location', 'southoutside', 'Orientation', 'horizontal');
+sgtitle('CSD BestISI by Layer, Area, and Hemisphere (Raw vs Model)');
