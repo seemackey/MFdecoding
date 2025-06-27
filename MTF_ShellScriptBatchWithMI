@@ -213,7 +213,7 @@ end
 mi_true_all = NaN(num_permutations, numchans, num_windows);
 mi_shuff_all = NaN(num_permutations, numchans, num_windows);
 
-for p = 1:num_permutations
+parfor p = 1:num_permutations
     for ch = 1:numchans
         for w = 1:num_windows
             cm_true = squeeze(conf_mat_true(p, ch, w, :, :));
