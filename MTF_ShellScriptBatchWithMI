@@ -1,0 +1,283 @@
+%% MTF decoding batch script
+
+clear; clc; close all;
+
+% === CONFIGURATION === % CHECK FOR LOOP 
+parent_dir = 'E:\MTF\data\click\core\left\imported\';    % directory containing oe/om/ev2 files
+figures_dir = fullfile(parent_dir, 'decoding_results_MI');
+if ~exist(figures_dir, 'dir')
+    mkdir(figures_dir);
+end
+epoch_tframe = [-50 700];                   % ms
+bins = [700];       % decoding window sizes (ms)
+%bins = [150,325];
+selected_channels = [8,11,14];
+
+% === Get all 1-/2- files ===
+all_files = dir(fullfile(parent_dir, '1-*@o*.mat'));
+all_files = [all_files; dir(fullfile(parent_dir, '2-*@o*.mat'))];
+
+for i = 1:length(all_files)
+    file = all_files(i);
+    [~, name_no_ext, ~] = fileparts(file.name);  % e.g., '1-wnc6022@oe'
+    fprintf('\n>> Processing %s\n', name_no_ext);
+
+    % Determine modality and flag
+    if contains(name_no_ext, '@oe')
+        csd_flag = 1;
+    elseif contains(name_no_ext, '@om')
+        csd_flag = 0;
+    else
+        warning('Skipping unknown file type: %s', name_no_ext);
+        continue;
+    end
+
+    % Find corresponding .ev2 file (strip prefix like 1- or 2-)
+    ev2_base = regexprep(name_no_ext, '^[12]-(.*)@o[em]$', '$1');
+
+    if isempty(ev2_base)
+        warning('Unable to extract EV2 base for %s. Skipping...', name_no_ext);
+        continue;
+    end
+
+    ev2_file = dir(fullfile(parent_dir, [ev2_base '.ev2']));
+    if isempty(ev2_file)
+        warning('EV2 file not found for %s. Skipping...', name_no_ext);
+        continue;
+    end
+
+    % Setup temp dir
+    temp_dir = fullfile(parent_dir, ['temp_' name_no_ext]);
+    if ~exist(temp_dir, 'dir'); mkdir(temp_dir); end
+
+    % Copy necessary files to temp dir
+    copyfile(fullfile(file.folder, file.name), fullfile(temp_dir, file.name));
+    copyfile(fullfile(ev2_file.folder, ev2_file.name), fullfile(temp_dir, ev2_file.name));
+
+    % Epoch and decode
+    try
+        [epoched_data, srate] = MTF_loadMATfile(temp_dir, epoch_tframe);
+        if csd_flag ==1
+            numchans = size(epoched_data.LFP_trial_avg{1}, 1);
+            selchans = 1:numchans;
+            num_conditions = length(epoched_data.LFP);
+        else
+            numchans = size(epoched_data.MUA_trial_avg{1}, 1);
+            selchans = 1:numchans;
+            num_conditions = length(epoched_data.MUA);
+        end
+    catch err
+        warning('Failed to load or process file %s: %s', name_no_ext, err.message);
+        disp(err.stack);
+        rmdir(temp_dir, 's');
+        continue;
+    end
+    
+    % Skip decoding if not enough conditions
+    if num_conditions < 3
+        fprintf('Skipping %s due to insufficient conditions (%d found).\n', name_no_ext, num_conditions);
+        rmdir(temp_dir, 's');
+        continue;
+    end
+    
+    try
+        for bin_idx = 1:length(bins)
+            bin = bins(bin_idx);
+            fprintf('  - Bin %d ms...\n', bin);
+            tic
+            results = MTF_run_decoding(epoched_data, bin, srate, csd_flag, selchans, selected_channels, epoch_tframe);
+            toc
+            % Save results using full filename
+            tag = name_no_ext;
+            savefile = fullfile(figures_dir, sprintf('%s_decoding_%dms.mat', tag, bin));
+            jpgfile  = fullfile(figures_dir, sprintf('%s_MI_700ms.jpg', tag, bin));
+            %saveas(results.figure, figfile);
+           % results.figure = [];
+            save(savefile, '-struct', 'results');
+            % Save MI figure if it exists and is still open
+            figHandles = findall(0, 'Type', 'figure');
+            for i = 1:length(figHandles)
+                if contains(get(get(gca(figHandles(i)), 'Title'), 'String'), 'Mutual Information')
+                    exportgraphics(figHandles(i), jpgfile, 'Resolution', 300);
+                    break;
+                end
+            end
+            
+            close all
+        end
+    catch err
+        warning('Error decoding %s: %s', name_no_ext, err.message);
+        disp(err.stack);
+    end
+
+    rmdir(temp_dir, 's');
+end
+
+
+fprintf('\n=== Batch decoding complete ===\n');
+
+function results = MTF_run_decoding(epoched_data, bin_size_ms, srate, csd_flag, selchans, selected_channels, epoch_tframe)
+% Performs decoding and permutation-based MI estimation in one unified loop
+
+% -----------------------------
+% === Setup and Definitions ===
+% -----------------------------
+num_conditions = length(epoched_data.LFP);
+numchans = length(selchans);
+window_size_samples = bin_size_ms / 1000 * srate;
+
+positive_duration = epoch_tframe(2);
+num_windows = floor(positive_duration / bin_size_ms);
+bin_centers = (0:num_windows-1) * bin_size_ms + bin_size_ms/2;
+time_axis = epoch_tframe(1):1000/srate:epoch_tframe(2);
+
+num_permutations = 300;
+all_labels = [];
+
+for cond_idx = 1:num_conditions
+    if csd_flag
+        trials = size(epoched_data.CSD{cond_idx}, 2);
+    else
+        trials = size(epoched_data.MUA{cond_idx}, 2);
+    end
+    all_labels = [all_labels; repmat(cond_idx, trials, 1)];
+end
+
+n_trials_total = length(all_labels);
+
+% ----------------------------------
+% === Initialize Data Containers ===
+% ----------------------------------
+conf_mat_true = zeros(num_permutations, numchans, num_windows, num_conditions, num_conditions);
+conf_mat_shuffled = zeros(num_permutations, numchans, num_windows, num_conditions, num_conditions);
+
+% -----------------------------
+% === Unified Permutation Loop ===
+% -----------------------------
+ parfor perm = 1:num_permutations
+    shuffled_labels = all_labels(randperm(n_trials_total));
+
+    for ch_idx = 1:numchans
+        ch = selchans(ch_idx);
+
+        for w = 1:num_windows
+            w_start = (w - 1) * window_size_samples + 1;
+            w_end = min(w_start + window_size_samples - 1, length(time_axis));
+
+            data_all = [];
+            for cond_idx = 1:num_conditions
+                if csd_flag
+                    data = epoched_data.CSD{cond_idx}(ch, :, :);
+                else
+                    data = epoched_data.MUA{cond_idx}(ch, :, :);
+                end
+                for trial = 1:size(data, 2)
+                    trial_data = data(:, trial, w_start:w_end);
+                    data_all = [data_all; trial_data(:)'];
+                end
+            end
+            data_all = double(data_all);
+
+            % --- Decode with True Labels ---
+            cv = cvpartition(all_labels, 'KFold', 4);
+            conf_folds = zeros(4, num_conditions, num_conditions);
+            for f = 1:4
+                model = fitcdiscr(data_all(cv.training(f), :), all_labels(cv.training(f)));
+                preds = predict(model, data_all(cv.test(f), :));
+                truth = all_labels(cv.test(f));
+                for i = 1:length(truth)
+                    conf_folds(f, truth(i), preds(i)) = conf_folds(f, truth(i), preds(i)) + 1;
+                end
+            end
+            conf_mat_true(perm, ch_idx, w, :, :) = squeeze(mean(conf_folds, 1));
+
+            % --- Decode with Shuffled Labels ---
+            cv_shuff = cvpartition(shuffled_labels, 'KFold', 4);
+            conf_folds_shuff = zeros(4, num_conditions, num_conditions);
+            for f = 1:4
+                model = fitcdiscr(data_all(cv_shuff.training(f), :), shuffled_labels(cv_shuff.training(f)));
+                preds = predict(model, data_all(cv_shuff.test(f), :));
+                truth = shuffled_labels(cv_shuff.test(f));
+                for i = 1:length(truth)
+                    conf_folds_shuff(f, truth(i), preds(i)) = conf_folds_shuff(f, truth(i), preds(i)) + 1;
+                end
+            end
+            conf_mat_shuffled(perm, ch_idx, w, :, :) = squeeze(mean(conf_folds_shuff, 1));
+        end
+    end
+end
+
+% ----------------------------------------
+% === Compute Mutual Information ===
+% ----------------------------------------
+mi_true_all = NaN(num_permutations, numchans, num_windows);
+mi_shuff_all = NaN(num_permutations, numchans, num_windows);
+
+for p = 1:num_permutations
+    for ch = 1:numchans
+        for w = 1:num_windows
+            cm_true = squeeze(conf_mat_true(p, ch, w, :, :));
+            cm_shuff = squeeze(conf_mat_shuffled(p, ch, w, :, :));
+            mi_true_all(p, ch, w) = compute_mutual_information_single(cm_true);
+            mi_shuff_all(p, ch, w) = compute_mutual_information_single(cm_shuff);
+        end
+    end
+end
+
+mi_true_mean = squeeze(mean(mi_true_all, 1));
+mi_true_loCI = squeeze(prctile(mi_true_all, 2.5, 1));
+mi_true_hiCI = squeeze(prctile(mi_true_all, 97.5, 1));
+mi_shuffled_mean = squeeze(mean(mi_shuff_all, 1));
+mi_shuffled_loCI = squeeze(prctile(mi_shuff_all, 2.5, 1));
+mi_shuffled_hiCI = squeeze(prctile(mi_shuff_all, 97.5, 1));
+
+% ------------------
+% === Plotting ===
+% ------------------
+[~, w_idx] = min(abs(bin_centers - 700));
+mi_true_mean_700 = mi_true_mean;
+mi_true_loCI_700 = mi_true_loCI;
+mi_true_hiCI_700 = mi_true_hiCI;
+mi_shuffled_mean_700 = mi_shuffled_mean;
+mi_shuffled_loCI_700 = mi_shuffled_loCI;
+mi_shuffled_hiCI_700 = mi_shuffled_hiCI;
+
+f_mi = figure('Position', [200 400 1000 400]);
+hold on;
+x = 1:numchans;
+errorbar(x - 0.15, mi_true_mean_700, mi_true_mean_700 - mi_true_loCI_700, mi_true_hiCI_700 - mi_true_mean_700, 'o', 'Color', [0.2 0.6 0.8], 'LineWidth', 1.5, 'DisplayName', 'True MI');
+errorbar(x + 0.15, mi_shuffled_mean_700, mi_shuffled_mean_700 - mi_shuffled_loCI_700, mi_shuffled_hiCI_700 - mi_shuffled_mean_700, 's', 'Color', [0.8 0.2 0.2], 'LineWidth', 1.5, 'DisplayName', 'Chance MI');
+xlabel('Channel'); ylabel('Mutual Information (bits)');
+title('Mutual Information at 700 ms Bin');
+%legend('Location', 'best'); grid on;
+xlim([0.5, numchans + 0.5]);
+
+
+
+% ------------------
+% === Return Struct ===
+% ------------------
+results.mi_true_mean = mi_true_mean;
+results.mi_true_loCI = mi_true_loCI;
+results.mi_true_hiCI = mi_true_hiCI;
+results.mi_shuffled_mean = mi_shuffled_mean;
+results.mi_shuffled_loCI = mi_shuffled_loCI;
+results.mi_shuffled_hiCI = mi_shuffled_hiCI;
+results.confusion_matrices_true = conf_mat_true;
+results.confusion_matrices_shuffled = conf_mat_shuffled;
+end
+
+function mi = compute_mutual_information_single(cm)
+if sum(cm(:)) == 0
+    mi = NaN;
+    return;
+end
+Pxy = cm / sum(cm(:));
+Px = sum(Pxy, 2);
+Py = sum(Pxy, 1);
+PxPy = Px * Py;
+mask = Pxy > 0;
+mi = sum(Pxy(mask) .* log2(Pxy(mask) ./ PxPy(mask)), 'all');
+end
+
+
