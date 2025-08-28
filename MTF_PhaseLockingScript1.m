@@ -43,7 +43,7 @@ harmonics     = [1 2 3];     % test f0, 2*f0, 3*f0
 
 % Output subdirectories
 out_epoched = fullfile(parent_dir, 'epoched');
-out_phase   = fullfile(parent_dir, 'phase');
+out_phase   = fullfile(parent_dir, 'phaseITPC');
 if ~exist(out_epoched, 'dir'); mkdir(out_epoched); end
 if ~exist(out_phase,   'dir'); mkdir(out_phase);   end
 
@@ -218,8 +218,12 @@ function out = plv_by_condition(dataCell, chans, srate, post_idx, ISI_ms, harmon
                 S(h).p_rayleigh = []; S(h).p_weighted = []; S(h).q = []; S(h).signif = [];
                 continue;
             end
-
+            % PLV OR ITPC
             [PLV, mean_phase, p_ray, p_w] = plv_and_randomphase(seg, srate, f, use_taper, n_mc);
+            % Normalize PLV for trial count: Rayleigh's Z (aka ITPCz)
+            nTr_local = size(seg, 2);                 % number of trials in this condition
+            ITPCz     = nTr_local .* (PLV.^2);        % per-channel ITPCz
+            PLV = ITPCz/nTr_local;
 
             % FDR across channels for this harmonic
             signif = p_w < alpha; q = [];
